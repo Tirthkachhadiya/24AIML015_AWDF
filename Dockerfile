@@ -1,43 +1,64 @@
-# ─── Backend Dockerfile ─────────────────────────────────────────────────────
-# Practical 11: Containerization with Docker
+# ─── Frontend Dockerfile (Multi-Stage Build) ────────────────────────────────
+# Practical 11: Supplementary — Multi-Stage Build to reduce image size
 #
-# Base: node:18-alpine (Alpine Linux variant — ~1/3 the size of node:18-bullseye)
-# This is NOT multi-stage for the backend because there is no build step —
-# Node.js runs the source directly. Multi-stage is reserved for the frontend
-# where a separate build stage compiles React before the serve stage.
+# Why multi-stage for the frontend but not the backend?
+#   The React app must be compiled (npm run build) into static HTML/CSS/JS.
+#   The build tools (Vite, ESLint, TypeScript compiler, ~300 MB of devDependencies)
+#   are only needed DURING the build — they must NOT end up in the final image.
 #
-# Layer ordering is CRITICAL for Docker build cache efficiency:
-#   1. COPY package files first (changes rarely → cached unless deps change)
-#   2. RUN npm install (expensive — only re-runs when package.json changes)
-#   3. COPY source files last (changes frequently → only invalidates last layers)
+# Stage 1 (builder): Full Node.js environment → installs ALL deps → runs build
+# Stage 2 (runner):  Starts fresh from node:18-alpine → copies ONLY /dist →
+#                    installs ONLY the packages needed to serve (Vite preview)
 #
-# Why NOT copy node_modules from the host?
-#   - node_modules may contain platform-specific native binaries compiled for
-#     the host OS (e.g., Windows/macOS). These will NOT work inside a Linux
-#     container. Always run npm install INSIDE the container.
-#   - node_modules is excluded via .dockerignore to prevent it from bloating
-#     the build context sent to the Docker daemon.
+# Size comparison (approximate):
+#   Without multi-stage: ~900 MB (all devDependencies included)
+#   With multi-stage:    ~300 MB (only production deps + built assets)
+#
+# Vite's `preview` command serves the production build and is suitable for
+# this lab. For a real production deployment, you would serve /dist with
+# a dedicated web server like Nginx (even smaller, ~25 MB).
 
-FROM node:18-alpine
+# ── Stage 1: Build ────────────────────────────────────────────────────────────
+FROM node:18-alpine AS builder
 
-# Set working directory inside the container
+LABEL stage="builder"
+
 WORKDIR /app
 
-# Step 1: Copy only dependency manifests (cache-friendly layer)
-# If package.json hasn't changed, Docker reuses the cached npm install layer
+# Cache-friendly: copy manifests first, install, then copy source
 COPY package*.json ./
-
-# Step 2: Install production + dev dependencies inside the container
-# --omit=dev would be used for production; we keep dev deps for dotenv etc.
 RUN npm install
 
-# Step 3: Copy all remaining source files
-# This layer is rebuilt on every source change, but npm install is NOT re-run
+# Copy source and build the production bundle
 COPY . .
+RUN npm run build
+# After this stage, /app/dist contains the compiled React app
 
-# Document which port the container listens on (informational — does not publish)
-# Actual publishing is done via docker-compose.yml ports mapping
-EXPOSE 5000
 
-# Start the Express server
-CMD ["node", "server.js"]
+# ── Stage 2: Serve ───────────────────────────────────────────────────────────
+FROM node:18-alpine AS runner
+
+WORKDIR /app
+
+# Copy ONLY the package manifests for the serve stage
+COPY package*.json ./
+
+# Install ONLY production dependencies (Vite is needed for vite preview)
+# In a real production image, replace this with a static server like:
+#   FROM nginx:alpine
+#   COPY --from=builder /app/dist /usr/share/nginx/html
+RUN npm install
+
+# Copy the compiled bundle from the builder stage (NOT the source code)
+COPY --from=builder /app/dist ./dist
+
+# Vite preview listens on port 4173 by default
+# We remap to 5173 via --port flag to match our docker-compose port mapping
+EXPOSE 5173
+
+# --host 0.0.0.0 binds to all interfaces inside the container
+# (required — without this, the server only listens on 127.0.0.1 and is
+#  unreachable from outside the container even with port mapping)
+# vite.config.js already sets preview.host = true and preview.port = 5173
+# so we just call `npm run preview` with no extra flags needed
+CMD ["npm", "run", "preview"]
