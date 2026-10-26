@@ -1,0 +1,21 @@
+# ─── Backend .dockerignore ───────────────────────────────────────────────────
+# Practical 11 Supplementary: Exclude files from Docker build context
+#
+# The build context is everything Docker sends to the daemon when building.
+# Large or irrelevant files in the context slow down every build significantly.
+#
+# node_modules  — MUST be excluded. Platform-specific binaries won't work
+#                 across OS boundaries. npm install runs inside the container.
+# .env          — MUST be excluded. Secrets are injected at runtime via
+#                 docker-compose.yml environment section or Docker secrets.
+#                 Never bake .env values into an image layer.
+# .git          — Not needed inside the container; wastes build context size.
+
+node_modules
+.env
+.git
+*.log
+npm-debug.log*
+dist
+.nyc_output
+coverage
